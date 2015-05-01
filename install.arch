@@ -1,0 +1,67 @@
+#!/bin/bash
+set -exvu
+
+Disk=/dev/sda
+CloneUriPrefix='https://github.com'
+GetUriPrefix='https://raw.githubusercontent.com'
+GitBranch='master'
+BootRepo='oskude/aps-boot'
+EtcRepo='oskude/aps-etc'
+
+### Define Helpers
+################################################################################
+git-cloneover()
+{
+	cd $1
+	git init
+	git remote add origin $2
+	git fetch
+	git checkout -ft origin/$3
+	git reset --hard
+	cd -
+}
+cleanup()
+{
+	sync
+	umount -R /mnt
+}
+trap cleanup EXIT
+
+### Partition Disk
+################################################################################
+sgdisk --zap-all $Disk
+sgdisk -n 1:0:+512M -t 1:8300 -c 1:'aps_boot' $Disk
+sgdisk -n 2:0:+1G   -t 2:8200 -c 2:'aps_swap' $Disk
+sgdisk -n 3:0:+1G   -t 3:8304 -c 3:'aps_root' $Disk
+sgdisk -n 4:0:0     -t 4:8302 -c 4:'aps_home' $Disk
+sgdisk -p $Disk
+# TODO: how to be 100% /dev/disk/by-partlabel is populated?
+sleep 1
+
+### Format Partitions
+################################################################################
+mkfs.ext4 -F /dev/disk/by-partlabel/aps_root
+mkfs.ext4 -F /dev/disk/by-partlabel/aps_boot
+mkfs.ext4 -F /dev/disk/by-partlabel/aps_home
+mkswap       /dev/disk/by-partlabel/aps_swap
+
+### Mount Partitions
+################################################################################
+mount PARTLABEL='aps_root' /mnt
+mkdir -p /mnt/boot
+mkdir -p /mnt/var/cache
+mount PARTLABEL='aps_boot' /mnt/boot
+mount -t tmpfs none /mnt/var/cache
+
+### Install System
+################################################################################
+curl -o /etc/pacman.d/mirrorlist \
+	$GetUriPrefix/$EtcRepo/$GitBranch/pacman.d/mirrorlist
+pacstrap -c /mnt $(curl $GetUriPrefix/$EtcRepo/$GitBranch/mypackages)
+git-cloneover /mnt/etc $CloneUriPrefix/$EtcRepo $GitBranch
+git-cloneover /mnt/boot $CloneUriPrefix/$BootRepo $GitBranch
+arch-chroot /mnt syslinux-install_update -iam
+
+### Done
+################################################################################
+
